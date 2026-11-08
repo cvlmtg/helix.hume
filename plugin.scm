@@ -2,8 +2,8 @@
 
 (define helix/plugin "cvlmtg/helix.hume")
 
-(unless (hume-version>=? 0 19 0)
-  (error (string-append helix/plugin ": requires HUME 0.19.0 or later")))
+(unless (hume-version>=? 0 20 0)
+  (error (string-append helix/plugin ": requires HUME 0.20.0 or later")))
 
 (unless (member "core:stdlib" (declared-plugins))
   (error (string-append helix/plugin ": requires core:stdlib — (load-plugin! \"core:stdlib\") before (load-plugin! \"" helix/plugin "\")")))
@@ -669,13 +669,16 @@
         (filter (lambda (other) (not (helix/same-buffer? other pane)))
                 helix/modified-buffers)))
 
+;;; A read-only view's refresh, such as `[messages]` taking a new entry, is
+;;; not an edit.
 (register-hook! 'on-text-changed
   (lambda (pane changes)
-    (helix/forget-buffer pane)
-    (set! helix/modified-buffers (cons pane helix/modified-buffers))
-    (when (pair? changes)
-      (set! helix/last-edits
-            (hash-insert helix/last-edits (buffer-key pane) (helix/hunk-offset pane (car changes)))))))
+    (unless (buffer-read-only? pane)
+      (helix/forget-buffer pane)
+      (set! helix/modified-buffers (cons pane helix/modified-buffers))
+      (when (pair? changes)
+        (set! helix/last-edits
+              (hash-insert helix/last-edits (buffer-key pane) (helix/hunk-offset pane (car changes))))))))
 
 (register-hook! 'on-buffer-close helix/forget-buffer)
 

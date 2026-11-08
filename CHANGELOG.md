@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Requires HUME 0.19.0 or later and `core:stdlib`.
+Requires HUME 0.20.0 or later and `core:stdlib`.
 
 - Helix's keys for every HUME action that matches one: Extend mode on `v`; `w`/`e`/`b`
   selecting from the cursor; `x` growing by lines; `f`/`t`/`F`/`T` selecting up to a

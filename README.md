@@ -11,7 +11,7 @@ and the Helix keys it can't build, do nothing.
 
 ## Requirements
 
-- HUME 0.19.0 or later.
+- HUME 0.20.0 or later.
 - `core:stdlib`, loaded before this plugin; it refuses to load without it.
 
 ## Install

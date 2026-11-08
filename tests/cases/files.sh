@@ -18,3 +18,5 @@ expect probes.scm $'other.txt\n' "<c-w>F<c-t>" $'2\n'
 # g m returns to the changed buffer, and stays put when no other one changed.
 expect default.scm $'x other.txt\n' "iA<esc>lllgfgm" $'Ax other.txt\n'
 expect default.scm $'foo\n' "gmiX<esc>" $'Xfoo\n'
+# A read-only view's refresh is not a change g m returns to.
+expect probes.scm $'foo\n' "iA<esc><c-w>v<c-y><c-y><c-w>wgmiX<esc>" $'XAfoo\n'

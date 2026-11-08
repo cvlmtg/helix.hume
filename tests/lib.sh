@@ -17,7 +17,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_DIR="$REPO_ROOT/tests/config"
 
 PLUGIN_NAME="cvlmtg/helix.hume"
-MIN_HUME_VERSION="0.19.0" # keep in step with README's Requirements section and plugin.scm's load-time check
+MIN_HUME_VERSION="0.20.0" # keep in step with README's Requirements section and plugin.scm's load-time check
 
 # ── Resolving which `hume` to drive ─────────────────────────────────────────
 #
