@@ -15,8 +15,6 @@ bindings=(
     " S|lsp/workspace-symbols"
     " r|lsp/rename"
     " a|lsp/code-actions"
-    " p|classic-paste/clipboard-after"
-    " P|classic-paste/clipboard-before"
     " /|grep/picker"
     "gr|lsp/references"
     "=|lsp/format-source"

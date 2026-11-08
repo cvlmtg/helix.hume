@@ -28,3 +28,9 @@ Requires HUME 0.19.0 or later and `core:stdlib`.
 - HUME's keys that Helix doesn't have are unbound, core:pickers' `z f`/`z m` and
   core:classic-paste's `Ctrl-v`/`Ctrl-Shift-v` included, and on a kitty terminal a `Ctrl` key
   Helix doesn't bind does nothing instead of extending the key's motion.
+- Helix's typed commands HUME doesn't already have: `:open`, `:buffer-close` and its other and
+  all forms, `:hsplit`/`:vs` and the `-new` splits, `:g`, the yank-join and clipboard commands,
+  `:insert-output`/`:append-output`, `:sh`, `:read`, `:reflow`, `:diffget`, `:indent-style`,
+  `:line-ending`, `:lang`, `:toggle`, `:change-current-directory`, `:show-directory`, `:char`,
+  `:yank-diagnostic`, and `:format` with `core:lsp`.
+- `Space p`/`Space P` paste the clipboard without `core:classic-paste`.

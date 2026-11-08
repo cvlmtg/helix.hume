@@ -65,8 +65,10 @@ Before saving, check where they go:
   it's missing.
 - Put the plugin's line after `core:lsp`, `core:pickers`, `core:classic-paste` and
   `cvlmtg/grep.hume`, if you load them: the plugin binds Helix's keys for their actions
-  (`Space f`, `Space k`, `] d`, `=`, `Space p`, `Space /`, …) only when they are already
-  loaded. Loading it last also lets its `z b` win over `core:pickers`' `z b`.
+  (`Space f`, `Space k`, `] d`, `=`, `Space /`, …) and defines `:format` only when they are
+  already loaded, and it can only unbind the keys they bind that Helix doesn't have
+  (`z f`, `Ctrl-v`, …) once they have bound them. Loading it last also lets its `z b` win
+  over `core:pickers`' `z b`.
 - The `g n`, `g p`, `K` and `G` lines are there because `core:lsp`, which loads after your
   `init.scm`, binds those keys (`G R` for `G`) to its own commands; a binding in `init.scm`
   wins over it.
@@ -140,7 +142,7 @@ To stay on a release instead of the latest commit, pin its tag with `#:ref`:
 | Normal | `Space f` / `F`, `b`, `g` | `pickers/files`, `pickers/buffers`, `pickers/git-modified` | Pickers, with `core:pickers` |
 | Normal | `Space /` | `grep/picker` | Search the files, with [grep.hume](https://github.com/cvlmtg/grep.hume) |
 | Normal | `Space k`, `s` / `S`, `r`, `a` | `lsp/hover`, `lsp/document-symbols` / `lsp/workspace-symbols`, `lsp/rename`, `lsp/code-actions` | With `core:lsp` |
-| Normal | `Space p` / `P` | `classic-paste/clipboard-after` / `classic-paste/clipboard-before` | Paste the clipboard, with `core:classic-paste` |
+| Normal | `Space p` / `P` | `helix/paste-clipboard-after` / `helix/paste-clipboard-before` | Paste the clipboard after / before each selection |
 | Normal | `=` | `lsp/format-source` | Format, with `core:lsp` |
 | Normal | `]` / `[` + `f`, `t`, `a`, `c`, `T`, `p` | `goto-next-*` / `goto-prev-*` | Function, class, argument, comment, test, paragraph |
 | Normal | `] g` / `[ g`, `] G` / `[ G` | `helix/goto-next-change` / `helix/goto-prev-change`, `helix/goto-last-change` / `helix/goto-first-change` | Select a change against git's last commit |
@@ -157,6 +159,42 @@ To stay on a release instead of the latest commit, pin its tag with `#:ref`:
 
 The plugin also sets `word-selects-whitespace` to `after`, so words take the whitespace after
 them as in Helix. A `set-option!` of your own in `init.scm` still wins.
+
+## Typed commands
+
+Helix's `:` commands whose names HUME doesn't already use. HUME's own (`:w`, `:q`, `:e`,
+`:sort`, `:earlier`, `:later`, `:set`, …) keep HUME's meaning: a plugin can't replace them, so
+`:sort`, `:earlier` and `:later` work as HUME's do, not as Helix's.
+
+| Command | Effect |
+|---|---|
+| `:open`, `:o` | Open each file named, relative to the working directory; a path may end in `:line` or `:line:col` |
+| `:buffer-close`, `:bc`, `:bclose` | Close this buffer, or the buffers named; with `!`, discarding unsaved changes. Without `!` a modified buffer stays open |
+| `:buffer-close-others`, `:bco`, `:bcloseother` | Close every other buffer, the same way |
+| `:buffer-close-all`, `:bca`, `:bcloseall` | Close every buffer, the same way |
+| `:buffer-next`, `:buffer-previous` | Next / previous buffer |
+| `:hsplit`, `:hs`, `:vs` | Split stacked / side by side, opening each file named in a split of its own |
+| `:hsplit-new`, `:hnew`, `:vsplit-new`, `:vnew` | Split onto a new scratch buffer |
+| `:g` | Go to the line named |
+| `:yank-join`, `:clipboard-yank-join` | Yank the selections joined into one, with a line break or the separator given, to the kill ring / the clipboard |
+| `:clipboard-yank` | Copy the primary selection to the clipboard, as `Space Y` |
+| `:clipboard-paste-after`, `:clipboard-paste-before`, `:clipboard-paste-replace` | Paste the clipboard, as `Space p`, `Space P` and `Space R` |
+| `:insert-output`, `:append-output` | Insert a shell command's output before / after each selection, as `!` and `Alt-!` |
+| `:run-shell-command`, `:sh` | Run a shell command and show its output in a popup |
+| `:read`, `:r` | Insert the file named at each cursor |
+| `:reflow` | Re-wrap each selection to the width given, or 80, keeping the first line's indent and comment marker (`#`, `//`, `;`, `>`) on every line |
+| `:reset-diff-change`, `:diffget`, `:diffg` | Put back git's committed lines for each change a selection touches |
+| `:indent-style` | Indent with tabs (`t`) or 1–16 spaces; without an argument, show the style |
+| `:line-ending` | Write the buffer with `crlf` or `lf` line endings; without an argument, show them |
+| `:set-language`, `:lang` | Set the buffer's language, `text` for none; without an argument, show it |
+| `:toggle-option`, `:toggle` | Flip a true/false option, or step an option through the values given, such as `:toggle indent-style hard soft` |
+| `:change-current-directory` | Change the working directory: to the path given, back with `-`, or home |
+| `:show-directory` | Show the working directory |
+| `:character-info`, `:char` | Show the character under the cursor: its codepoints and UTF-8 bytes |
+| `:yank-diagnostic` | Copy the messages of the diagnostics under the primary selection to the clipboard, or to the register named |
+| `:format`, `:fmt` | Format the file, with `core:lsp` |
+
+Option names are HUME's, not Helix's: `:toggle insert-auto-pairs`, not `:toggle auto-pairs`.
 
 ## What changes from HUME's keys
 
@@ -244,6 +282,18 @@ stay, and so do `K`, `g n`, `g p` and `G` unless your `init.scm` binds them as
   - `g w`: a plugin can't draw labels over the text.
   - `Ctrl-w H`/`J`/`K`/`L`: HUME rotates panes but can't swap two.
   - `Q`/`q`: HUME's macros are on `Q Q` and `q q`.
+- **Helix typed commands the plugin doesn't define**:
+  - `:x`, `:write-buffer-close`, `:update` and `:write-quit-all`: a plugin can't save a buffer.
+  - `:cquit`: a plugin can't quit HUME.
+  - `:reload`/`:reload-all`, `:encoding`, `:move`, `:redraw`, `:show-clipboard-provider`,
+    `:config-open`, `:config-open-workspace`, `:config-reload`, `:log-open`,
+    `:lsp-workspace-command`, and the tree-sitter and debug commands: HUME gives plugins
+    nothing to build them on.
+  - `:clear-register`: a plugin can't empty a register.
+  - `:pipe` and `:pipe-to`: a plugin can't give a command input.
+  - The primary-clipboard commands: HUME has no primary selection register.
+  - `:set-option`/`:get-option`, `:ear`/`:lat` and `:rsort`: HUME's `:set`, `:get`, `:earlier`,
+    `:later` and `:sort` already cover them, with HUME's own syntax and behavior.
 
 ## Contributing
 

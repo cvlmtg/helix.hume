@@ -26,6 +26,9 @@
 (define (helix/line-length pane line)
   (string-length (helix/line-text pane line)))
 
+(define (helix/same-buffer? a b)
+  (equal? (buffer-key a) (buffer-key b)))
+
 (define (helix/dedupe xs)
   (cond ((null? xs) xs)
         ((member (car xs) (cdr xs)) (helix/dedupe (cdr xs)))
@@ -351,6 +354,18 @@
     (write-register! "c"
       (list (helix/selection-text pane (call! "stdlib/primary-selection" (buffer-selections pane)))))))
 
+(define-command! "helix/paste-clipboard-after"
+  "Paste the system clipboard after each selection."
+  (lambda (pane)
+    (set-register-prefix! "c")
+    (call! "paste-after" pane)))
+
+(define-command! "helix/paste-clipboard-before"
+  "Paste the system clipboard before each selection."
+  (lambda (pane)
+    (set-register-prefix! "c")
+    (call! "paste-before" pane)))
+
 (define (helix/switch-char-case ch)
   (let ((upper (char-upcase ch)))
     (if (char=? upper ch) (char-downcase ch) upper)))
@@ -415,15 +430,21 @@
         (filter (lambda (path) (> (string-length path) 0))
                 (map trim (helix/selection-texts pane))))))
 
+;;; `path` with a leading `~/` taken from the home directory.
+(define (helix/expand-home path)
+  (let ((home (home-dir)))
+    (if (and home (starts-with? path "~/"))
+        (path-join home (substring path 2 (string-length path)))
+        path)))
+
 ;;; A relative path is taken from the buffer's own directory, as Helix does,
 ;;; and from the working directory for a buffer with no file.
 (define (helix/resolve-path pane path)
-  (let ((home (home-dir))
+  (let ((path (helix/expand-home path))
         (file (buffer-path pane)))
-    (cond ((and home (starts-with? path "~/"))
-           (path-join home (substring path 2 (string-length path))))
-          ((call! "stdlib/path-absolute?" path) path)
-          (else (path-join (if file (parent-name file) (cwd)) path)))))
+    (if (call! "stdlib/path-absolute?" path)
+        path
+        (path-join (if file (parent-name file) (cwd)) path))))
 
 (define (helix/open-file! path)
   (if (is-dir? path)
@@ -613,7 +634,7 @@
 (define (helix/forget-buffer pane)
   (set! helix/last-edits (hash-remove helix/last-edits (buffer-key pane)))
   (set! helix/modified-buffers
-        (filter (lambda (other) (not (equal? (buffer-key other) (buffer-key pane))))
+        (filter (lambda (other) (not (helix/same-buffer? other pane)))
                 helix/modified-buffers)))
 
 (register-hook! 'on-text-changed
@@ -640,7 +661,7 @@
     (let ((target (call! "stdlib/find"
                          (lambda (other)
                            (and (buffer-live? other)
-                                (not (equal? (buffer-key other) (buffer-key pane)))))
+                                (not (helix/same-buffer? other pane))))
                          helix/modified-buffers)))
       (if target
           (switch-to-buffer! pane target)
@@ -700,35 +721,45 @@
 
 ;; ── Shell output ──────────────────────────────────────────────────────────────
 
-;;; Runs the command typed at the prompt once, through the `shell` option, and
-;;; rewrites each selection with `place` applied to its text and the output,
-;;; less one trailing line break as Helix strips it.
-(define (helix/shell-output! pane label place)
+;;; Runs `command` through the `shell` option, returning its output, or #f
+;;; after reporting a nonzero exit.
+(define (helix/run-shell command)
+  (let* ((shell (get-option "shell"))
+         (result (run-capture! (car shell) (append (cdr shell) (list command)))))
+    (if (equal? (hash-ref result 'exit) 0)
+        (hash-ref result 'stdout)
+        (begin
+          (log! 'error (string-append command ": " (hash-ref result 'stderr)))
+          #f))))
+
+;;; Runs `command` once and rewrites each selection with `place` applied to
+;;; its text and the output, less one trailing line break as Helix strips it.
+(define (helix/shell-output! pane command place)
+  (let ((out (helix/run-shell command)))
+    (when out
+      (let* ((n (string-length out))
+             (out (if (and (> n 0) (char=? (string-ref out (- n 1)) #\newline))
+                      (substring out 0 (- n 1))
+                      out)))
+        (when (> (string-length out) 0)
+          (helix/rewrite-selections! pane
+            (map (lambda (text) (place text out)) (helix/selection-texts pane))))))))
+
+(define (helix/output-before text out) (list "" out text))
+(define (helix/output-after text out) (list text out ""))
+
+(define (helix/prompt-shell-output! pane label place)
   (prompt! pane label
     (lambda (command)
-      (when command
-        (let* ((shell (get-option "shell"))
-               (result (run-capture! (car shell) (append (cdr shell) (list command))))
-               (out (hash-ref result 'stdout))
-               (n (string-length out))
-               (out (if (and (> n 0) (char=? (string-ref out (- n 1)) #\newline))
-                        (substring out 0 (- n 1))
-                        out)))
-          (cond ((not (equal? (hash-ref result 'exit) 0))
-                 (log! 'error (string-append command ": " (hash-ref result 'stderr))))
-                ((> (string-length out) 0)
-                 (helix/rewrite-selections! pane
-                   (map (lambda (text) (place text out)) (helix/selection-texts pane))))))))))
+      (when command (helix/shell-output! pane command place)))))
 
 (define-command! "helix/shell-insert-output"
   "Insert a shell command's output before each selection."
-  (lambda (pane)
-    (helix/shell-output! pane "insert-output:" (lambda (text out) (list "" out text)))))
+  (lambda (pane) (helix/prompt-shell-output! pane "insert-output:" helix/output-before)))
 
 (define-command! "helix/shell-append-output"
   "Append a shell command's output after each selection."
-  (lambda (pane)
-    (helix/shell-output! pane "append-output:" (lambda (text out) (list text out "")))))
+  (lambda (pane) (helix/prompt-shell-output! pane "append-output:" helix/output-after)))
 
 ;; ── Surround ──────────────────────────────────────────────────────────────────
 
@@ -988,6 +1019,8 @@
     ("space y" "yank")
     ("space R" "helix/replace-with-clipboard")
     ("space Y" "helix/yank-main-to-clipboard")
+    ("space p" "helix/paste-clipboard-after")
+    ("space P" "helix/paste-clipboard-before")
     ("space c" "toggle-comment")
     ("space alt-c" "toggle-comment")
     ("] f" "goto-next-function")
@@ -1023,8 +1056,6 @@
     ("space S" "lsp/workspace-symbols")
     ("space r" "lsp/rename")
     ("space a" "lsp/code-actions")
-    ("space p" "classic-paste/clipboard-after")
-    ("space P" "classic-paste/clipboard-before")
     ("space /" "grep/picker")
     ("g r" "lsp/references")
     ("=" "lsp/format-source")
@@ -1127,3 +1158,457 @@
                     (append helix/hume-root-keys
                             (map (lambda (b) (helix/first-key (car b)))
                                  (append helix/normal-bindings helix/present-bindings))))))
+
+;; ── Typed commands ────────────────────────────────────────────────────────────
+;; Helix's typed commands under Helix's names. A script can't take over a
+;; name HUME already uses, so `:w`, `:sort`, `:earlier` and the like keep
+;; HUME's meaning.
+
+;;; Registers `proc` under every name in `names`: a command and its aliases.
+(define (helix/define-typed! names doc proc)
+  (for-each (lambda (name) (define-typed-command! name doc proc)) names))
+
+(define (helix/words arg)
+  (if arg (split-whitespace arg) '()))
+
+;;; A typed command's single argument with surrounding spaces trimmed, or #f.
+(define (helix/single-arg arg)
+  (and arg (let ((text (trim arg))) (and (> (string-length text) 0) text))))
+
+;;; A 1-based number written in `text`, or #f.
+(define (helix/positive-number text)
+  (let ((n (and text (string->number text))))
+    (and n (integer? n) (> n 0) n)))
+
+;; Files, buffers and panes
+
+;;; Splits a trailing `:line` or `:line:col` off `word`, giving (path line
+;;; col) with #f for each part missing.
+(define (helix/split-position word)
+  (let* ((parts (split-many word ":"))
+         (n (length parts))
+         (number-at (lambda (i) (and (>= i 1) (< i n) (helix/positive-number (list-ref parts i)))))
+         (rejoin (lambda (k) (string-join (take parts k) ":"))))
+    (cond ((and (number-at (- n 1)) (number-at (- n 2)))
+           (list (rejoin (- n 2)) (number-at (- n 2)) (number-at (- n 1))))
+          ((number-at (- n 1)) (list (rejoin (- n 1)) (number-at (- n 1)) #f))
+          (else (list word #f #f)))))
+
+;;; Opens a `:open` word in the focused pane: a path relative to the working
+;;; directory, with an optional position.
+(define (helix/open-word! word)
+  (let ((parts (helix/split-position (helix/expand-home word))))
+    (helix/open-file! (car parts))
+    (when (cadr parts)
+      (let* ((pane (focused-pane))
+             (line (helix/count-line pane (cadr parts)))
+             (col (min (- (or (caddr parts) 1) 1) (helix/line-length pane line))))
+        (goto-location! pane (hash 'target pane 'char-offset (+ (line->char-offset pane line) col)))))))
+
+(helix/define-typed! '("open" "o")
+  "Open each file named; a path may end in :line or :line:col."
+  (lambda (pane arg)
+    (let ((words (helix/words arg)))
+      (if (null? words)
+          (log! 'error "open: name a file to open")
+          (for-each helix/open-word! words)))))
+
+;;; Closes `buffers`. Without `force` a modified buffer stays open, and an
+;;; error counts those left.
+(define (helix/close-buffers! buffers force)
+  (let* ((keep? (lambda (buffer) (and (not force) (buffer-dirty? buffer))))
+         (kept (filter keep? buffers)))
+    (for-each (lambda (buffer) (close-buffer! buffer #:discard-unsaved force))
+              (filter (lambda (buffer) (not (keep? buffer))) buffers))
+    (unless (null? kept)
+      (log! 'error (string-append (number->string (length kept)) " unsaved buffer"
+                                  (if (null? (cdr kept)) "" "s") " remaining")))))
+
+;;; The buffers `names` give by path, or `pane`'s own buffer without names.
+(define (helix/named-buffers pane names)
+  (if (null? names)
+      (list pane)
+      (filter (lambda (buffer)
+                (let ((path (buffer-path buffer))
+                      (shown (buffer-display-path buffer #:relative (cwd))))
+                  (call! "stdlib/find"
+                         (lambda (name)
+                           (or (equal? name shown)
+                               (and path (equal? (path-join (cwd) (helix/expand-home name)) path))))
+                         names)))
+              (buffers))))
+
+(helix/define-typed! '("buffer-close" "bc" "bclose")
+  "Close this buffer, or the buffers named; ! discards unsaved changes."
+  (lambda (pane arg force)
+    (helix/close-buffers! (helix/named-buffers pane (helix/words arg)) force)))
+
+(helix/define-typed! '("buffer-close-others" "bco" "bcloseother")
+  "Close every buffer but this one; ! discards unsaved changes."
+  (lambda (pane force)
+    (helix/close-buffers! (filter (lambda (buffer) (not (helix/same-buffer? buffer pane))) (buffers))
+                          force)))
+
+(helix/define-typed! '("buffer-close-all" "bca" "bcloseall")
+  "Close every buffer; ! discards unsaved changes."
+  (lambda (pane force) (helix/close-buffers! (buffers) force)))
+
+(helix/define-typed! '("buffer-next")
+  "Switch to the next buffer."
+  (lambda (pane) (call! "goto-next-buffer" pane)))
+
+(helix/define-typed! '("buffer-previous")
+  "Switch to the previous buffer."
+  (lambda (pane) (call! "goto-prev-buffer" pane)))
+
+;;; Splits with `split`, or opens each word given in a split `with-split` makes.
+(define (helix/split-open split with-split)
+  (lambda (pane arg)
+    (let ((words (helix/words arg)))
+      (if (null? words)
+          (call! split pane)
+          (for-each (call! with-split helix/open-word!) words)))))
+
+;;; Splits with `split` and shows a new scratch buffer there; a pane too small
+;;; to split is left as it is.
+(define (helix/split-new split)
+  (lambda (pane)
+    (let ((count (length (panes))))
+      (call! split pane)
+      (when (> (length (panes)) count) (call! "buffer-new" (focused-pane))))))
+
+(helix/define-typed! '("hsplit" "hs")
+  "Split the pane stacked, opening each file named in a split of its own."
+  (helix/split-open "pane-split" "stdlib/with-split"))
+
+(helix/define-typed! '("vs")
+  "Split the pane side by side, opening each file named in a split of its own."
+  (helix/split-open "pane-vsplit" "stdlib/with-vsplit"))
+
+(helix/define-typed! '("hsplit-new" "hnew")
+  "Split the pane stacked onto a new scratch buffer."
+  (helix/split-new "pane-split"))
+
+(helix/define-typed! '("vsplit-new" "vnew")
+  "Split the pane side by side onto a new scratch buffer."
+  (helix/split-new "pane-vsplit"))
+
+(helix/define-typed! '("g")
+  "Go to the line named."
+  (lambda (pane arg)
+    (let ((n (helix/positive-number (helix/single-arg arg))))
+      (if n
+          (helix/goto-line! pane (helix/count-line pane n) #f)
+          (log! 'error "g: name a line number")))))
+
+;; Editing
+
+(define (helix/yank-joined! pane register arg)
+  (write-register! register (list (string-join (helix/selection-texts pane) (or arg "\n")))))
+
+(helix/define-typed! '("yank-join")
+  "Yank the selections joined into one, with a line break or the separator given."
+  (lambda (pane arg) (helix/yank-joined! pane "k" arg)))
+
+(helix/define-typed! '("clipboard-yank-join")
+  "Copy the selections joined into one to the clipboard, with a line break or the separator given."
+  (lambda (pane arg) (helix/yank-joined! pane "c" arg)))
+
+(helix/define-typed! '("clipboard-yank")
+  "Copy the primary selection to the system clipboard."
+  (lambda (pane) (call! "helix/yank-main-to-clipboard" pane)))
+
+(helix/define-typed! '("clipboard-paste-after")
+  "Paste the system clipboard after each selection."
+  (lambda (pane) (call! "helix/paste-clipboard-after" pane)))
+
+(helix/define-typed! '("clipboard-paste-before")
+  "Paste the system clipboard before each selection."
+  (lambda (pane) (call! "helix/paste-clipboard-before" pane)))
+
+(helix/define-typed! '("clipboard-paste-replace")
+  "Replace each selection with the system clipboard."
+  (lambda (pane) (call! "helix/replace-with-clipboard" pane)))
+
+(define (helix/typed-shell-output place)
+  (lambda (pane arg)
+    (if arg
+        (helix/shell-output! pane arg place)
+        (log! 'error "name a shell command to run"))))
+
+(helix/define-typed! '("insert-output")
+  "Insert a shell command's output before each selection."
+  (helix/typed-shell-output helix/output-before))
+
+(helix/define-typed! '("append-output")
+  "Append a shell command's output after each selection."
+  (helix/typed-shell-output helix/output-after))
+
+(helix/define-typed! '("run-shell-command" "sh")
+  "Run a shell command and show its output."
+  (lambda (pane arg)
+    (if arg
+        (let ((out (helix/run-shell arg)))
+          (when out
+            (if (> (string-length (trim out)) 0)
+                (show-popup! pane (trim-end out) #:kind 'scrollable)
+                (log! 'info "Command run"))))
+        (log! 'error "sh: name a shell command to run"))))
+
+(helix/define-typed! '("read" "r")
+  "Insert the file named at each cursor."
+  (lambda (pane arg)
+    (let ((path (helix/single-arg arg)))
+      (cond ((not path) (log! 'error "read: name a file to read"))
+            ((not (is-file? (helix/expand-home path)))
+             (log! 'error (string-append "path is not a file: " path)))
+            (else
+             (let ((text (read-port-to-string (open-input-file (helix/expand-home path)))))
+               (edit-text! pane
+                 (map (lambda (sel)
+                        (hash 'start-char (selection-head sel) 'end-char (selection-head sel) 'text text))
+                      (buffer-selections pane)))))))))
+
+;;; The indent and comment markers a reflowed paragraph repeats on each line.
+(define (helix/line-prefix line)
+  (let loop ((i 0))
+    (if (and (< i (string-length line))
+             (let ((ch (string-ref line i)))
+               (or (helix/blank? ch) (memv ch '(#\# #\/ #\; #\>)))))
+        (loop (+ i 1))
+        (substring line 0 i))))
+
+;;; Fills `words` into lines of at most `width` characters, each starting with
+;;; `prefix`; a word longer than the width gets a line of its own.
+(define (helix/fill-words words prefix width)
+  (let loop ((words words) (line #f) (lines '()))
+    (cond ((null? words) (reverse (if line (cons line lines) lines)))
+          ((not line) (loop (cdr words) (string-append prefix (car words)) lines))
+          ((<= (+ (string-length line) 1 (string-length (car words))) width)
+           (loop (cdr words) (string-append line " " (car words)) lines))
+          (else (loop words #f (cons line lines))))))
+
+;;; Re-wraps `text` to `width`, keeping its first line's prefix on every line
+;;; and a blank line between paragraphs.
+(define (helix/reflow text width)
+  (let* ((ends-with-break (and (> (string-length text) 0)
+                               (char=? (string-ref text (- (string-length text) 1)) #\newline)))
+         (lines (split-many (if ends-with-break (substring text 0 (- (string-length text) 1)) text) "\n"))
+         (prefix (helix/line-prefix (car lines)))
+         (strip (lambda (line)
+                  (if (starts-with? line prefix)
+                      (substring line (string-length prefix) (string-length line))
+                      (trim line))))
+         (paragraphs (let loop ((lines lines) (current '()) (done '()))
+                       (let ((flush (if (null? current) done (cons (reverse current) done))))
+                         (cond ((null? lines) (reverse flush))
+                               ((= (string-length (trim (strip (car lines)))) 0)
+                                (loop (cdr lines) '() (cons '() flush)))
+                               (else (loop (cdr lines) (cons (strip (car lines)) current) done))))))
+         (filled (map (lambda (paragraph)
+                        (if (null? paragraph)
+                            (list (trim-end prefix))
+                            (helix/fill-words (split-whitespace (string-join paragraph " ")) prefix width)))
+                      paragraphs)))
+    (string-append (string-join (apply append filled) "\n") (if ends-with-break "\n" ""))))
+
+(helix/define-typed! '("reflow")
+  "Re-wrap each selection to the width given, or to 80 characters."
+  (lambda (pane arg)
+    (let ((width (or (helix/positive-number (helix/single-arg arg)) 80)))
+      (helix/replace-selections! pane
+        (map (lambda (text)
+               (let ((reflowed (helix/reflow text width)))
+                 (if (> (string-length reflowed) 0) reflowed text)))
+             (helix/selection-texts pane))))))
+
+(define (helix/line-start-or-end pane line)
+  (if (< line (buffer-line-count pane))
+      (line->char-offset pane line)
+      (buffer-char-count pane)))
+
+(helix/define-typed! '("reset-diff-change" "diffget" "diffg")
+  "Put back git's committed lines for each change a selection touches."
+  (lambda (pane)
+    (let ((hunks (helix/git-hunks pane)))
+      (if (not hunks)
+          (log! 'error "Diff is not available in the current buffer")
+          (let* ((lines (map (lambda (sel)
+                               (cons (char-offset->line pane (selection-start-char sel))
+                                     (char-offset->line pane (- (selection-end-char sel) 1))))
+                             (buffer-selections pane)))
+                 (touched (filter (lambda (hunk)
+                                    (let ((start (hash-ref hunk 'new-start-line))
+                                          (end (max (hash-ref hunk 'new-end-line)
+                                                    (+ (hash-ref hunk 'new-start-line) 1))))
+                                      (call! "stdlib/find"
+                                             (lambda (range) (and (<= start (cdr range)) (> end (car range))))
+                                             lines)))
+                                  hunks)))
+            (if (null? touched)
+                (log! 'error "There are no changes under any selection")
+                (edit-text! pane
+                  (map (lambda (hunk)
+                         (hash 'start-char (helix/line-start-or-end pane (hash-ref hunk 'new-start-line))
+                               'end-char (helix/line-start-or-end pane (hash-ref hunk 'new-end-line))
+                               'text (apply string-append
+                                            (map (lambda (line) (string-append line "\n"))
+                                                 (hash-ref hunk 'old-lines)))))
+                       touched))))))))
+
+;; Settings and information
+
+(helix/define-typed! '("indent-style")
+  "Indent with tabs (t) or with 1-16 spaces; without an argument, show the style."
+  (lambda (pane arg)
+    (let* ((arg (helix/single-arg arg))
+           (spaces (helix/positive-number arg)))
+      (cond ((not arg)
+             (log! 'info (if (equal? (get-buffer-option pane "indent-style") "hard")
+                             "tabs"
+                             (let ((n (get-buffer-option pane "indent-width")))
+                               (string-append (number->string n) (if (= n 1) " space" " spaces"))))))
+            ((or (equal? arg "0") (starts-with? "tabs" (string-downcase arg)))
+             (set-buffer-option! pane "indent-style" "hard"))
+            ((and spaces (<= spaces 16))
+             (set-buffer-option! pane "indent-style" "soft")
+             (set-buffer-option! pane "indent-width" spaces))
+            (else (log! 'error "invalid indent style"))))))
+
+(helix/define-typed! '("line-ending")
+  "Set the line ending to crlf or lf; without an argument, show it."
+  (lambda (pane arg)
+    (let ((arg (helix/single-arg arg)))
+      (cond ((not arg)
+             (log! 'info (if (equal? (get-buffer-option pane "line-ending") "crlf") "crlf" "line feed")))
+            ((starts-with? (string-downcase arg) "crlf") (set-buffer-option! pane "line-ending" "crlf"))
+            ((starts-with? (string-downcase arg) "lf") (set-buffer-option! pane "line-ending" "lf"))
+            (else (log! 'error "invalid line ending"))))))
+
+(helix/define-typed! '("set-language" "lang")
+  "Set the buffer's language, text for none; without an argument, show it."
+  (lambda (pane arg)
+    (let ((arg (helix/single-arg arg)))
+      (if arg
+          (set-buffer-option! pane "language" (if (equal? arg "text") "" arg))
+          (let ((language (get-buffer-option pane "language")))
+            (log! 'info (if (and language (> (string-length language) 0)) language "text")))))))
+
+;;; `text` read as a value of the same type as `like`.
+(define (helix/option-value text like)
+  (cond ((number? like) (string->number text))
+        ((boolean? like) (equal? text "true"))
+        (else text)))
+
+(helix/define-typed! '("toggle-option" "toggle")
+  "Flip a true/false option, or step an option through the values given."
+  (lambda (pane arg)
+    (let ((words (helix/words arg)))
+      (if (null? words)
+          (log! 'error "toggle: name an option")
+          (let* ((key (car words))
+                 (current (get-option key))
+                 (values (map (lambda (text) (helix/option-value text current)) (cdr words)))
+                 (next (cond ((pair? values)
+                              (let ((after (member current values)))
+                                (if (and after (pair? (cdr after))) (cadr after) (car values))))
+                             ((boolean? current) (not current))
+                             (else #f))))
+            (if (or (pair? values) (boolean? current))
+                (begin
+                  (set-option! key next)
+                  (log! 'info (string-append "'" key "' is now set to " (to-string next))))
+                (log! 'error (string-append "'" key "' is not true/false: give the values to step through"))))))))
+
+;;; The directory `:change-current-directory -` goes back to.
+(define helix/previous-cwd #f)
+
+(helix/define-typed! '("change-current-directory")
+  "Change the working directory: to the path given, to the last one with -, or home."
+  (lambda (pane arg)
+    (let* ((arg (helix/single-arg arg))
+           (dir (cond ((not arg) (home-dir))
+                      ((equal? arg "-") helix/previous-cwd)
+                      (else (helix/expand-home arg)))))
+      (if dir
+          (let ((from (cwd)))
+            (set-cwd! dir)
+            (set! helix/previous-cwd from)
+            (log! 'info (string-append "Current working directory is now " (cwd))))
+          (log! 'error "No previous working directory")))))
+
+(helix/define-typed! '("show-directory")
+  "Show the working directory."
+  (lambda (pane) (log! 'info (string-append "Current working directory is " (cwd)))))
+
+(define (helix/hex n digits)
+  (let ((text (number->string n 16)))
+    (string-append (make-string (max 0 (- digits (string-length text))) #\0) text)))
+
+;;; The UTF-8 bytes of codepoint `n`.
+(define (helix/utf8-bytes n)
+  (cond ((< n #x80) (list n))
+        ((< n #x800) (list (+ #xc0 (quotient n 64)) (+ #x80 (modulo n 64))))
+        ((< n #x10000) (list (+ #xe0 (quotient n 4096))
+                             (+ #x80 (modulo (quotient n 64) 64))
+                             (+ #x80 (modulo n 64))))
+        (else (list (+ #xf0 (quotient n 262144))
+                    (+ #x80 (modulo (quotient n 4096) 64))
+                    (+ #x80 (modulo (quotient n 64) 64))
+                    (+ #x80 (modulo n 64))))))
+
+;;; Helix's message for the character under the primary cursor. A bare
+;;; cursor covers its whole character, marks included; a wider selection
+;;; gives the codepoint at its cursor.
+(helix/define-typed! '("character-info" "char")
+  "Show the character under the cursor: its codepoints and UTF-8 bytes."
+  (lambda (pane)
+    (let* ((sel (call! "stdlib/primary-selection" (buffer-selections pane)))
+           (text (if (= (selection-anchor sel) (selection-head sel))
+                     (helix/selection-text pane sel)
+                     (string (helix/char-at pane (selection-head sel)))))
+           (codes (map char->integer (string->list text)))
+           (printable (apply string-append
+                             (map (lambda (ch)
+                                    (case (char->integer ch)
+                                      ((0) "\\0") ((9) "\\t") ((10) "\\n") ((13) "\\r")
+                                      (else (string ch))))
+                                  (string->list text)))))
+      (log! 'info
+        (string-append
+          "\"" printable "\" ("
+          (string-join (map (lambda (n) (string-append "U+" (helix/hex n 4))) codes) " ")
+          ")"
+          (if (and (null? (cdr codes)) (< (car codes) #x80))
+              (string-append " Dec " (number->string (car codes)))
+              "")
+          " Hex"
+          (string-join (map (lambda (n)
+                              (apply string-append
+                                     (map (lambda (b) (string-append " " (helix/hex b 2))) (helix/utf8-bytes n))))
+                            codes)
+                       " +"))))))
+
+(helix/define-typed! '("yank-diagnostic")
+  "Copy the messages of the diagnostics under the primary selection to the clipboard, or the register named."
+  (lambda (pane arg)
+    (let* ((register (or (helix/single-arg arg) "c"))
+           (sel (call! "stdlib/primary-selection" (buffer-selections pane)))
+           (start (selection-start-char sel))
+           (end (selection-end-char sel))
+           (messages (map (lambda (d) (hash-ref d 'message))
+                          (filter (lambda (d)
+                                    (and (< (hash-ref d 'start-char) end)
+                                         (> (max (hash-ref d 'end-char) (+ (hash-ref d 'start-char) 1)) start)))
+                                  (diagnostics-for-buffer pane)))))
+      (cond ((not (register-name? register)) (log! 'error (string-append "no register named " register)))
+            ((null? messages) (log! 'error "No diagnostics under primary selection"))
+            (else
+             (write-register! register messages)
+             (log! 'info (string-append "Yanked " (number->string (length messages)) " diagnostic"
+                                        (if (null? (cdr messages)) "" "s") " to register " register)))))))
+
+(when (command-exists? "lsp/format-document")
+  (helix/define-typed! '("format" "fmt")
+    "Format the file with its language server."
+    (lambda (pane) (call! "lsp/format-document" pane))))

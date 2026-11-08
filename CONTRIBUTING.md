@@ -27,6 +27,9 @@ re-runs `init.scm`, so the edited body is evaluated again with no restart.
 
 - Editor command names are prefixed `helix/` (`helix/goto-line`), so they can't collide with
   another plugin's commands.
+- Typed commands take Helix's own names and aliases, unprefixed (`:buffer-close`, `:bc`),
+  registered together with `helix/define-typed!`. A name HUME or a core plugin already uses
+  can't be taken; leave that command out.
 - Top-level `define`s carry the same `helix/` prefix as house style, to set them apart from
   HUME builtins and Steel functions. `lint.sh` checks both.
 - Bind only keys Helix itself binds, and only to a command that does what Helix's does or
