@@ -26,13 +26,45 @@
 (define (helix/line-length pane line)
   (string-length (helix/line-text pane line)))
 
+;;; `line`, or the last line when `line` is past it.
+(define (helix/clamp-line pane line)
+  (min line (- (buffer-line-count pane) 1)))
+
+;;; The offset `line` starts at, or the end of the text past the last line.
+(define (helix/line-start-or-end pane line)
+  (if (< line (buffer-line-count pane))
+      (line->char-offset pane line)
+      (buffer-char-count pane)))
+
+;;; The index of the first character of `text` at or after `i` that fails
+;;; `keep?`, or the text's length.
+(define (helix/skip-while text i keep?)
+  (let loop ((i i))
+    (if (and (< i (string-length text)) (keep? (string-ref text i))) (loop (+ i 1)) i)))
+
+(define (helix/goto-offset! pane offset)
+  (goto-location! pane (hash 'target pane 'char-offset offset)))
+
+;;; The offset of a lone bare cursor, or #f.
+(define (helix/lone-cursor pane)
+  (let ((sels (buffer-selections pane)))
+    (and (null? (cdr sels))
+         (= (selection-anchor (car sels)) (selection-head (car sels)))
+         (selection-head (car sels)))))
+
+;;; `text` less one trailing line break.
+(define (helix/drop-final-newline text)
+  (if (ends-with? text "\n") (substring text 0 (- (string-length text) 1)) text))
+
 (define (helix/same-buffer? a b)
   (equal? (buffer-key a) (buffer-key b)))
 
+;;; `xs` without repeats, keeping each value's first place.
 (define (helix/dedupe xs)
-  (cond ((null? xs) xs)
-        ((member (car xs) (cdr xs)) (helix/dedupe (cdr xs)))
-        (else (cons (car xs) (helix/dedupe (cdr xs))))))
+  (let loop ((xs xs) (seen (hashset)) (out '()))
+    (cond ((null? xs) (reverse out))
+          ((hashset-contains? seen (car xs)) (loop (cdr xs) seen out))
+          (else (loop (cdr xs) (hashset-insert seen (car xs)) (cons (car xs) out))))))
 
 (define (helix/index-where pred xs)
   (let loop ((xs xs) (i 0))
@@ -69,21 +101,23 @@
 (define (helix/word-target pane count extend)
   (and (= count 0)
        (not extend)
-       (let ((sels (buffer-selections pane)))
-         (if (null? (cdr sels))
-             (let* ((at (selection-head (car sels)))
-                    (ch (helix/char-at pane at)))
-               (cond ((not (= at (selection-anchor (car sels)))) #f)
-                     ((helix/blank? ch) 'blank)
+       (let ((at (helix/lone-cursor pane)))
+         (if at
+             (let ((ch (helix/char-at pane at)))
+               (cond ((helix/blank? ch) 'blank)
                      ((char-whitespace? ch) #f)
                      (else at)))
-             (and (call! "stdlib/all-single-char?" sels) 'several)))))
+             (and (call! "stdlib/all-single-char?" (buffer-selections pane)) 'several)))))
+
+;;; Steps every head until the first one is on `target`.
+(define (helix/head-to! pane target)
+  (if (< (helix/head pane) target)
+      (helix/walk-head! pane "move-right" (lambda (at) (< at target)))
+      (helix/walk-head! pane "move-left" (lambda (at) (> at target)))))
 
 (define (helix/start-at! pane cursor)
   (call! "flip-selections" pane)
-  (if (< (helix/head pane) cursor)
-      (helix/walk-head! pane "move-right" (lambda (at) (< at cursor)))
-      (helix/walk-head! pane "move-left" (lambda (at) (> at cursor))))
+  (helix/head-to! pane cursor)
   (call! "flip-selections" pane))
 
 ;;; Moves the start back to the cluster after `from`, the head the step began
@@ -106,9 +140,14 @@
     (let ((target (helix/word-target pane count extend)))
       (cond ((number? target) (call! object pane) (helix/start-at! pane target))
             ((equal? target 'several) (call! object pane))
+            ;; Each blank starts a cluster of its own, so the run can be counted.
             ((equal? target 'blank)
-             (helix/walk-head! pane "move-right"
-                               (lambda (at) (helix/blank? (helix/char-at pane (+ at 1))))))
+             (let* ((at (helix/head pane))
+                    (line (char-offset->line pane at))
+                    (col (- at (line->char-offset pane line)))
+                    (blanks (- (helix/skip-while (helix/line-text pane line) (+ col 1) helix/blank?)
+                               col 1)))
+               (when (> blanks 0) (call! "move-right" pane blanks #t))))
             (else (call! next pane count extend))))))
 
 ;;; On a word's last character Helix's `e` moves on to the next word.
@@ -144,7 +183,7 @@
              (if (= (selection-anchor (car (buffer-selections pane))) target)
                  (helix/prev-start! pane count extend prev)
                  (begin
-                   (helix/walk-head! pane "move-left" (lambda (at) (> at target)))
+                   (helix/head-to! pane target)
                    (call! "flip-selections" pane))))
             ((equal? target 'several) (call! object pane))
             (else (helix/prev-start! pane count extend prev))))))
@@ -224,11 +263,11 @@
         (cond ((> delta 0) (call! "move-down" pane delta #t))
               ((< delta 0) (call! "move-up" pane (- delta) #t)))
         (call! "goto-line-start" pane 0 #t))
-      (goto-location! pane (hash 'target pane 'char-offset (line->char-offset pane line)))))
+      (helix/goto-offset! pane (line->char-offset pane line))))
 
 ;;; The line a count names, clamped to the last one.
 (define (helix/count-line pane count)
-  (min (- count 1) (- (buffer-line-count pane) 1)))
+  (helix/clamp-line pane (- count 1)))
 
 (define-command! "helix/goto-line"
   "Go to the line the count names, or to the first line without a count."
@@ -252,7 +291,7 @@
          (line (max (+ top margin)
                     (min (+ top (- last-row margin))
                          (pick top last-row margin (max 0 (- count 1)))))))
-    (helix/goto-line! pane (min line (- (buffer-line-count pane) 1)) extend)))
+    (helix/goto-line! pane (helix/clamp-line pane line) extend)))
 
 (define-command! "helix/goto-window-top"
   "Go to the first line of the view past the scroll margin, or that many lines below it."
@@ -312,7 +351,7 @@
 ;;; range, and the cursor lands on the last character of `selected`.
 (define (helix/rewrite-selections! pane parts)
   (edit-text! pane
-    (apply append
+    (call! "stdlib/concat"
       (map (lambda (sel part)
              (let* ((start (selection-start-char sel))
                     (last (max (selection-anchor sel) (selection-head sel)))
@@ -342,11 +381,15 @@
             (let ((joined (apply string-append values)))
               (map (lambda (sel) joined) sels)))))))
 
+;;; A command running `command` with `register` as its register prefix.
+(define (helix/with-register register command)
+  (lambda (pane)
+    (set-register-prefix! register)
+    (call! command pane)))
+
 (define-command! "helix/change-noyank"
   "Delete each selection without yanking it and enter Insert mode."
-  (lambda (pane)
-    (set-register-prefix! "b")
-    (call! "change" pane)))
+  (helix/with-register "b" "change"))
 
 (define-command! "helix/yank-main-to-clipboard"
   "Copy the primary selection to the system clipboard."
@@ -356,15 +399,11 @@
 
 (define-command! "helix/paste-clipboard-after"
   "Paste the system clipboard after each selection."
-  (lambda (pane)
-    (set-register-prefix! "c")
-    (call! "paste-after" pane)))
+  (helix/with-register "c" "paste-after"))
 
 (define-command! "helix/paste-clipboard-before"
   "Paste the system clipboard before each selection."
-  (lambda (pane)
-    (set-register-prefix! "c")
-    (call! "paste-before" pane)))
+  (helix/with-register "c" "paste-before"))
 
 (define (helix/switch-char-case ch)
   (let ((upper (char-upcase ch)))
@@ -381,7 +420,7 @@
 (define (helix/rotate-contents! pane steps)
   (let* ((texts (helix/selection-texts pane))
          (n (length texts))
-         (k (modulo (- n (modulo steps n)) n)))
+         (k (modulo (- steps) n)))
     (helix/replace-selections! pane (append (list-tail texts k) (take texts k)))))
 
 (define-command! "helix/rotate-selection-contents-forward"
@@ -416,16 +455,15 @@
          (helix/path-char? (string-ref text col))
          (let ((start (let loop ((i col))
                         (if (and (> i 0) (helix/path-char? (string-ref text (- i 1)))) (loop (- i 1)) i)))
-               (end (let loop ((i col))
-                      (if (and (< i n) (helix/path-char? (string-ref text i))) (loop (+ i 1)) i))))
+               (end (helix/skip-while text col helix/path-char?)))
            (substring text start end)))))
 
 ;;; A lone bare cursor names the path around it; otherwise each selection
 ;;; names one with its text.
 (define (helix/selected-paths pane)
-  (let ((sels (buffer-selections pane)))
-    (if (and (null? (cdr sels)) (= (selection-anchor (car sels)) (selection-head (car sels))))
-        (let ((path (helix/path-at pane (selection-head (car sels)))))
+  (let ((at (helix/lone-cursor pane)))
+    (if at
+        (let ((path (helix/path-at pane at)))
           (if path (list path) '()))
         (filter (lambda (path) (> (string-length path) 0))
                 (map trim (helix/selection-texts pane))))))
@@ -497,15 +535,10 @@
 
 ;;; Selects a hunk's lines, or puts a cursor where lines were removed.
 (define (helix/select-hunk! pane hunk)
-  (let ((start (min (hash-ref hunk 'new-start-line) (- (buffer-line-count pane) 1)))
-        (lines (- (hash-ref hunk 'new-end-line) (hash-ref hunk 'new-start-line))))
-    (goto-location! pane (hash 'target pane 'char-offset (line->char-offset pane start)))
-    (when (> lines 0)
-      (call! "select-line" pane 0 #f)
-      (let loop ((left (- lines 1)))
-        (when (> left 0)
-          (call! "select-line" pane 0 #t)
-          (loop (- left 1)))))))
+  (let ((lines (- (hash-ref hunk 'new-end-line) (hash-ref hunk 'new-start-line))))
+    (helix/goto-line! pane (helix/clamp-line pane (hash-ref hunk 'new-start-line)) #f)
+    (when (> lines 0) (call! "select-line" pane 0 #f))
+    (when (> lines 1) (call! "select-line" pane (- lines 1) #t))))
 
 ;;; `pick` gets the hunks and the cursor's line and returns a hunk or #f.
 (define (helix/goto-change! pane pick)
@@ -542,12 +575,12 @@
 (define-command! "helix/goto-last-change"
   "Select the last change against git's HEAD."
   (lambda (pane)
-    (helix/goto-change! pane (lambda (hunks line) (helix/nth-or-last (reverse hunks) 1)))))
+    (helix/goto-change! pane (lambda (hunks line) (and (pair? hunks) (last hunks))))))
 
 (define (helix/goto-diagnostic! pane pick)
   (let ((diagnostics (diagnostics-for-buffer pane)))
     (when (pair? diagnostics)
-      (goto-location! pane (hash 'target pane 'char-offset (hash-ref (pick diagnostics) 'start-char))))))
+      (helix/goto-offset! pane (hash-ref (pick diagnostics) 'start-char)))))
 
 (define-command! "helix/goto-first-diagnostic"
   "Go to the buffer's first diagnostic."
@@ -555,8 +588,7 @@
 
 (define-command! "helix/goto-last-diagnostic"
   "Go to the buffer's last diagnostic."
-  (lambda (pane)
-    (helix/goto-diagnostic! pane (lambda (diagnostics) (list-ref diagnostics (- (length diagnostics) 1))))))
+  (lambda (pane) (helix/goto-diagnostic! pane last)))
 
 ;;; Picker rows for a buffer's diagnostics, each carrying the buffer and the
 ;;; diagnostic's offset.
@@ -587,7 +619,7 @@
 (define-command! "helix/workspace-diagnostics-picker"
   "Pick one of the diagnostics of every open buffer and go to it."
   (lambda (pane)
-    (helix/diagnostics-picker! pane (apply append (map helix/diagnostic-items (buffers))))))
+    (helix/diagnostics-picker! pane (call! "stdlib/concat" (map helix/diagnostic-items (buffers))))))
 
 ;; ── History ───────────────────────────────────────────────────────────────────
 
@@ -623,7 +655,7 @@
   (let* ((words (hash-ref hunk 'words))
          (new (if words (hash-ref words 'new) '()))
          (old (if words (hash-ref words 'old) '()))
-         (line (min (hash-ref hunk 'new-start-line) (- (buffer-line-count pane) 1))))
+         (line (helix/clamp-line pane (hash-ref hunk 'new-start-line))))
     (if (pair? new)
         (hash-ref (car new) 'start-char)
         (+ (line->char-offset pane line)
@@ -652,8 +684,7 @@
   (lambda (pane)
     (let ((offset (hash-try-get helix/last-edits (buffer-key pane))))
       (when offset
-        (goto-location! pane (hash 'target pane
-                                   'char-offset (min offset (- (buffer-char-count pane) 1))))))))
+        (helix/goto-offset! pane (min offset (- (buffer-char-count pane) 1)))))))
 
 (define-command! "helix/goto-last-modified-file"
   "Switch to the most recently changed buffer other than this one."
@@ -676,16 +707,28 @@
 ;;; Removes the selections starting at one of `starts`. A script can only
 ;;; remove the primary selection, so the primary is cycled onto each in turn.
 (define (helix/drop-selections! pane starts)
-  (let loop ()
-    (let* ((sels (buffer-selections pane))
-           (target (helix/index-where (lambda (sel) (memv (selection-start-char sel) starts)) sels)))
-      (when target
-        (let cycle ((steps (modulo (- target (helix/index-where selection-primary? sels)) (length sels))))
-          (when (> steps 0)
-            (call! "cycle-primary-forward" pane)
-            (cycle (- steps 1))))
-        (call! "remove-primary-selection" pane)
-        (loop)))))
+  (let ((starts (list->hashset starts)))
+    (let loop ()
+      (let* ((sels (buffer-selections pane))
+             (target (helix/index-where
+                       (lambda (sel) (hashset-contains? starts (selection-start-char sel)))
+                       sels)))
+        (when target
+          (let cycle ((steps (modulo (- target (helix/index-where selection-primary? sels)) (length sels))))
+            (when (> steps 0)
+              (call! "cycle-primary-forward" pane)
+              (cycle (- steps 1))))
+          (call! "remove-primary-selection" pane)
+          (loop))))))
+
+;;; The spans of `before` that hold a span of `after`. Both lists are sorted
+;;; and disjoint, as selections are, so one walk pairs them.
+(define (helix/spans-holding before after)
+  (let loop ((before before) (after after) (out '()))
+    (cond ((or (null? before) (null? after)) (reverse out))
+          ((< (car (car after)) (car (car before))) (loop before (cdr after) out))
+          ((<= (cdr (car after)) (cdr (car before))) (loop (cdr before) after (cons (car before) out)))
+          (else (loop (cdr before) after out)))))
 
 ;;; Steel has no regex, so `sift-within` finds the matches: it drops the
 ;;; selections with none and narrows the rest, and `undo-selection-change`
@@ -700,13 +743,12 @@
           (let ((after (helix/spans pane)))
             (unless (equal? after before)
               (call! "undo-selection-change" pane)
-              (let* ((matched? (lambda (span)
-                                 (call! "stdlib/find"
-                                        (lambda (m) (and (>= (car m) (car span)) (<= (cdr m) (cdr span))))
-                                        after)))
-                     (drop (map car (filter (lambda (span)
-                                              (if keep-matching (not (matched? span)) (matched? span)))
-                                            before))))
+              (let* ((matched (list->hashset (map car (helix/spans-holding before after))))
+                     (drop (filter (lambda (start)
+                                     (if keep-matching
+                                         (not (hashset-contains? matched start))
+                                         (hashset-contains? matched start)))
+                                   (map car before))))
                 (if (= (length drop) (length before))
                     (log! 'error "no selections remaining")
                     (helix/drop-selections! pane drop))))))))))
@@ -737,10 +779,7 @@
 (define (helix/shell-output! pane command place)
   (let ((out (helix/run-shell command)))
     (when out
-      (let* ((n (string-length out))
-             (out (if (and (> n 0) (char=? (string-ref out (- n 1)) #\newline))
-                      (substring out 0 (- n 1))
-                      out)))
+      (let ((out (helix/drop-final-newline out)))
         (when (> (string-length out) 0)
           (helix/rewrite-selections! pane
             (map (lambda (text) (place text out)) (helix/selection-texts pane))))))))
@@ -811,16 +850,15 @@
 ;;; selection stays on its text. The last line has no next line: its breaks
 ;;; go at the end of the text.
 (define (helix/add-blank-lines pane count below)
-  (let* ((last (- (buffer-line-count pane) 1))
-         (edge (if below max min))
+  (let* ((edge (if below max min))
          (lines (helix/dedupe
                   (map (lambda (sel)
                          (char-offset->line pane (edge (selection-anchor sel) (selection-head sel))))
                        (buffer-selections pane))))
          (insert-at (lambda (line)
-                      (cond ((not below) (line->char-offset pane line))
-                            ((< line last) (line->char-offset pane (+ line 1)))
-                            (else (buffer-char-count pane)))))
+                      (if below
+                          (helix/line-start-or-end pane (+ line 1))
+                          (line->char-offset pane line))))
          (breaks (make-string (max 1 count) #\newline)))
     (edit-text! pane
       (map (lambda (line)
@@ -875,11 +913,7 @@
       (lambda (at)
         (let* ((line (char-offset->line pane at))
                (start (line->char-offset pane line))
-               (text (helix/line-text pane line))
-               (blanks (let loop ((i 0))
-                         (if (and (< i (string-length text)) (helix/blank? (string-ref text i)))
-                             (loop (+ i 1))
-                             i))))
+               (blanks (helix/skip-while (helix/line-text pane line) 0 helix/blank?)))
           (cond ((> at (+ start blanks)) (cons (+ start blanks) at))
                 ((> at start) (cons start at))
                 ((> line 0) (cons (- at 1) at))
@@ -896,33 +930,28 @@
 
 ;;; A character is a word character when HUME's own word splitting keeps it,
 ;;; so the buffer's `word-chars` setting counts.
-(define (helix/word-char? pane ch)
-  (pair? (call! "stdlib/split-words" pane (string ch))))
+(define (helix/word-char? word-chars ch)
+  (pair? (split-words (string ch) word-chars)))
 
 ;;; Skips whitespace, line breaks included, then a run of word characters or
 ;;; a run of other non-blank ones.
 (define-command! "helix/delete-word-forward"
   "Delete to the end of the next word."
   (lambda (pane)
-    (helix/delete-at-cursors! pane
-      (lambda (at)
-        (let* ((line (char-offset->line pane at))
-               (stop (if (< (+ line 2) (buffer-line-count pane))
-                         (line->char-offset pane (+ line 2))
-                         (buffer-char-count pane)))
-               (text (buffer-text pane #:range (hash 'start-char at 'end-char stop)))
-               (n (string-length text))
-               (skip (lambda (i keep?)
-                       (let loop ((i i))
-                         (if (and (< i n) (keep? (string-ref text i))) (loop (+ i 1)) i))))
-               (word (skip 0 char-whitespace?))
-               (end (cond ((= word n) n)
-                          ((helix/word-char? pane (string-ref text word))
-                           (skip word (lambda (ch) (helix/word-char? pane ch))))
-                          (else
-                           (skip word (lambda (ch) (not (or (char-whitespace? ch)
-                                                            (helix/word-char? pane ch)))))))))
-          (cons at (+ at end)))))))
+    (let* ((word-chars (get-buffer-option pane "word-chars"))
+           (word-char? (lambda (ch) (helix/word-char? word-chars ch))))
+      (helix/delete-at-cursors! pane
+        (lambda (at)
+          (let* ((stop (helix/line-start-or-end pane (+ (char-offset->line pane at) 2)))
+                 (text (buffer-text pane #:range (hash 'start-char at 'end-char stop)))
+                 (word (helix/skip-while text 0 char-whitespace?))
+                 (end (cond ((= word (string-length text)) word)
+                            ((word-char? (string-ref text word)) (helix/skip-while text word word-char?))
+                            (else
+                             (helix/skip-while text word
+                                               (lambda (ch) (not (or (char-whitespace? ch)
+                                                                     (word-char? ch)))))))))
+            (cons at (+ at end))))))))
 
 (define-command! "helix/insert-word-under-cursor"
   "Insert the word under the cursor."
@@ -934,15 +963,6 @@
 
 (define (helix/bind-all! mode bindings)
   (for-each (lambda (b) (bind-key! mode (car b) (cadr b))) bindings))
-
-;;; Binds keys for another plugin's commands only when that plugin is loaded,
-;;; so a config without it gets neither the keys nor an unknown-command
-;;; warning for each. A lazy plugin's declared commands count.
-(define (helix/bind-present! bindings)
-  (for-each (lambda (b)
-              (when (command-exists? (cadr b))
-                (bind-key! 'normal (car b) (cadr b))))
-            bindings))
 
 (define (helix/under prefix bindings)
   (map (lambda (b) (list (string-append prefix " " (car b)) (cadr b))) bindings))
@@ -1121,7 +1141,10 @@
 
 (bind-key! 'command "ctrl-s" "helix/insert-word-under-cursor")
 
-(helix/bind-present! helix/present-bindings)
+;; Another plugin's commands get keys only when that plugin is loaded, so a
+;; config without it gets neither the keys nor an unknown-command warning for
+;; each. A lazy plugin's declared commands count.
+(helix/bind-all! 'normal (filter (lambda (b) (command-exists? (cadr b))) helix/present-bindings))
 
 ;; ── Ctrl keys ─────────────────────────────────────────────────────────────────
 ;; On a kitty terminal, a Ctrl key with no binding of its own runs the bare
@@ -1139,25 +1162,23 @@
     "x" "%" "," "(" ")" "C" "_" "d" "J" "&" ">" "lt" "c" "y" "p" "P" "u" "U" "r"
     "." "/" "?" "n" "N" "s" "|" ":" "i" "a" "I" "A" "o" "O"))
 
-;;; The keys whose Ctrl form keeps its binding: Helix's, and Ctrl-c, which
-;;; stays HUME's `cancel-pipe`.
-(define helix/helix-ctrl-keys '("b" "f" "u" "d" "i" "o" "a" "x" "c" "w"))
-
-(define (helix/first-key keys)
-  (let loop ((i 0))
-    (cond ((= i (string-length keys)) keys)
-          ((char=? (string-ref keys i) #\space) (substring keys 0 i))
-          (else (loop (+ i 1))))))
+;;; The keys whose Ctrl form keeps HUME's binding: those Helix binds the same
+;;; way, and Ctrl-c, which stays HUME's `cancel-pipe`. A Ctrl key the plugin
+;;; binds itself is found from its tables.
+(define helix/hume-ctrl-keys '("u" "d" "i" "o" "a" "c"))
 
 (define (helix/modified-key? key)
-  (and (> (string-length key) 1) (memv #\- (string->list key))))
+  (and (> (string-length key) 1) (string-contains? key "-")))
 
-(for-each (lambda (key) (bind-key! 'normal (string-append "ctrl-" key) "helix/nothing"))
-          (filter (lambda (key) (not (or (helix/modified-key? key) (member key helix/helix-ctrl-keys))))
-                  (helix/dedupe
-                    (append helix/hume-root-keys
-                            (map (lambda (b) (helix/first-key (car b)))
-                                 (append helix/normal-bindings helix/present-bindings))))))
+(let ((first-keys (map (lambda (b) (car (split-many (car b) " ")))
+                       (append helix/normal-bindings helix/present-bindings
+                               (helix/under "ctrl-w" helix/window-bindings)))))
+  (for-each (lambda (key) (bind-key! 'normal (string-append "ctrl-" key) "helix/nothing"))
+            (filter (lambda (key)
+                      (not (or (helix/modified-key? key)
+                               (member key helix/hume-ctrl-keys)
+                               (member (string-append "ctrl-" key) first-keys))))
+                    (helix/dedupe (append helix/hume-root-keys first-keys)))))
 
 ;; ── Typed commands ────────────────────────────────────────────────────────────
 ;; Helix's typed commands under Helix's names. A script can't take over a
@@ -1179,6 +1200,10 @@
 (define (helix/positive-number text)
   (let ((n (and text (string->number text))))
     (and n (integer? n) (> n 0) n)))
+
+;;; `n` and `noun`, plural unless `n` is 1.
+(define (helix/count-noun n noun)
+  (string-append (number->string n) " " noun (if (= n 1) "" "s")))
 
 ;; Files, buffers and panes
 
@@ -1203,7 +1228,7 @@
       (let* ((pane (focused-pane))
              (line (helix/count-line pane (cadr parts)))
              (col (min (- (or (caddr parts) 1) 1) (helix/line-length pane line))))
-        (goto-location! pane (hash 'target pane 'char-offset (+ (line->char-offset pane line) col)))))))
+        (helix/goto-offset! pane (+ (line->char-offset pane line) col))))))
 
 (helix/define-typed! '("open" "o")
   "Open each file named; a path may end in :line or :line:col."
@@ -1221,8 +1246,7 @@
     (for-each (lambda (buffer) (close-buffer! buffer #:discard-unsaved force))
               (filter (lambda (buffer) (not (keep? buffer))) buffers))
     (unless (null? kept)
-      (log! 'error (string-append (number->string (length kept)) " unsaved buffer"
-                                  (if (null? (cdr kept)) "" "s") " remaining")))))
+      (log! 'error (string-append (helix/count-noun (length kept) "unsaved buffer") " remaining")))))
 
 ;;; The buffers `names` give by path, or `pane`'s own buffer without names.
 (define (helix/named-buffers pane names)
@@ -1273,9 +1297,7 @@
 ;;; to split is left as it is.
 (define (helix/split-new split)
   (lambda (pane)
-    (let ((count (length (panes))))
-      (call! split pane)
-      (when (> (length (panes)) count) (call! "buffer-new" (focused-pane))))))
+    (when (call! split pane) (call! "buffer-new" (focused-pane)))))
 
 (helix/define-typed! '("hsplit" "hs")
   "Split the pane stacked, opening each file named in a split of its own."
@@ -1358,12 +1380,13 @@
 (helix/define-typed! '("read" "r")
   "Insert the file named at each cursor."
   (lambda (pane arg)
-    (let ((path (helix/single-arg arg)))
+    (let* ((path (helix/single-arg arg))
+           (file (and path (helix/expand-home path))))
       (cond ((not path) (log! 'error "read: name a file to read"))
-            ((not (is-file? (helix/expand-home path)))
+            ((not (is-file? file))
              (log! 'error (string-append "path is not a file: " path)))
             (else
-             (let ((text (read-port-to-string (open-input-file (helix/expand-home path)))))
+             (let ((text (read-port-to-string (open-input-file file))))
                (edit-text! pane
                  (map (lambda (sel)
                         (hash 'start-char (selection-head sel) 'end-char (selection-head sel) 'text text))
@@ -1371,12 +1394,8 @@
 
 ;;; The indent and comment markers a reflowed paragraph repeats on each line.
 (define (helix/line-prefix line)
-  (let loop ((i 0))
-    (if (and (< i (string-length line))
-             (let ((ch (string-ref line i)))
-               (or (helix/blank? ch) (memv ch '(#\# #\/ #\; #\>)))))
-        (loop (+ i 1))
-        (substring line 0 i))))
+  (substring line 0 (helix/skip-while line 0
+                                      (lambda (ch) (or (helix/blank? ch) (memv ch '(#\# #\/ #\; #\>)))))))
 
 ;;; Fills `words` into lines of at most `width` characters, each starting with
 ;;; `prefix`; a word longer than the width gets a line of its own.
@@ -1391,9 +1410,8 @@
 ;;; Re-wraps `text` to `width`, keeping its first line's prefix on every line
 ;;; and a blank line between paragraphs.
 (define (helix/reflow text width)
-  (let* ((ends-with-break (and (> (string-length text) 0)
-                               (char=? (string-ref text (- (string-length text) 1)) #\newline)))
-         (lines (split-many (if ends-with-break (substring text 0 (- (string-length text) 1)) text) "\n"))
+  (let* ((ends-with-break (ends-with? text "\n"))
+         (lines (split-many (helix/drop-final-newline text) "\n"))
          (prefix (helix/line-prefix (car lines)))
          (strip (lambda (line)
                   (if (starts-with? line prefix)
@@ -1410,7 +1428,7 @@
                             (list (trim-end prefix))
                             (helix/fill-words (split-whitespace (string-join paragraph " ")) prefix width)))
                       paragraphs)))
-    (string-append (string-join (apply append filled) "\n") (if ends-with-break "\n" ""))))
+    (string-append (string-join (call! "stdlib/concat" filled) "\n") (if ends-with-break "\n" ""))))
 
 (helix/define-typed! '("reflow")
   "Re-wrap each selection to the width given, or to 80 characters."
@@ -1421,11 +1439,6 @@
                (let ((reflowed (helix/reflow text width)))
                  (if (> (string-length reflowed) 0) reflowed text)))
              (helix/selection-texts pane))))))
-
-(define (helix/line-start-or-end pane line)
-  (if (< line (buffer-line-count pane))
-      (line->char-offset pane line)
-      (buffer-char-count pane)))
 
 (helix/define-typed! '("reset-diff-change" "diffget" "diffg")
   "Put back git's committed lines for each change a selection touches."
@@ -1466,8 +1479,7 @@
       (cond ((not arg)
              (log! 'info (if (equal? (get-buffer-option pane "indent-style") "hard")
                              "tabs"
-                             (let ((n (get-buffer-option pane "indent-width")))
-                               (string-append (number->string n) (if (= n 1) " space" " spaces"))))))
+                             (helix/count-noun (get-buffer-option pane "indent-width") "space"))))
             ((or (equal? arg "0") (starts-with? "tabs" (string-downcase arg)))
              (set-buffer-option! pane "indent-style" "hard"))
             ((and spaces (<= spaces 16))
@@ -1509,16 +1521,14 @@
           (let* ((key (car words))
                  (current (get-option key))
                  (values (map (lambda (text) (helix/option-value text current)) (cdr words)))
-                 (next (cond ((pair? values)
-                              (let ((after (member current values)))
-                                (if (and after (pair? (cdr after))) (cadr after) (car values))))
-                             ((boolean? current) (not current))
-                             (else #f))))
-            (if (or (pair? values) (boolean? current))
-                (begin
-                  (set-option! key next)
-                  (log! 'info (string-append "'" key "' is now set to " (to-string next))))
-                (log! 'error (string-append "'" key "' is not true/false: give the values to step through"))))))))
+                 (set-to! (lambda (next)
+                            (set-option! key next)
+                            (log! 'info (string-append "'" key "' is now set to " (to-string next))))))
+            (cond ((pair? values)
+                   (let ((after (member current values)))
+                     (set-to! (if (and after (pair? (cdr after))) (cadr after) (car values)))))
+                  ((boolean? current) (set-to! (not current)))
+                  (else (log! 'error (string-append "'" key "' is not true/false: give the values to step through")))))))))
 
 ;;; The directory `:change-current-directory -` goes back to.
 (define helix/previous-cwd #f)
@@ -1545,18 +1555,6 @@
   (let ((text (number->string n 16)))
     (string-append (make-string (max 0 (- digits (string-length text))) #\0) text)))
 
-;;; The UTF-8 bytes of codepoint `n`.
-(define (helix/utf8-bytes n)
-  (cond ((< n #x80) (list n))
-        ((< n #x800) (list (+ #xc0 (quotient n 64)) (+ #x80 (modulo n 64))))
-        ((< n #x10000) (list (+ #xe0 (quotient n 4096))
-                             (+ #x80 (modulo (quotient n 64) 64))
-                             (+ #x80 (modulo n 64))))
-        (else (list (+ #xf0 (quotient n 262144))
-                    (+ #x80 (modulo (quotient n 4096) 64))
-                    (+ #x80 (modulo (quotient n 64) 64))
-                    (+ #x80 (modulo n 64))))))
-
 ;;; Helix's message for the character under the primary cursor. A bare
 ;;; cursor covers its whole character, marks included; a wider selection
 ;;; gives the codepoint at its cursor.
@@ -1567,13 +1565,14 @@
            (text (if (= (selection-anchor sel) (selection-head sel))
                      (helix/selection-text pane sel)
                      (string (helix/char-at pane (selection-head sel)))))
-           (codes (map char->integer (string->list text)))
+           (chars (string->list text))
+           (codes (map char->integer chars))
            (printable (apply string-append
                              (map (lambda (ch)
                                     (case (char->integer ch)
                                       ((0) "\\0") ((9) "\\t") ((10) "\\n") ((13) "\\r")
                                       (else (string ch))))
-                                  (string->list text)))))
+                                  chars))))
       (log! 'info
         (string-append
           "\"" printable "\" ("
@@ -1583,10 +1582,11 @@
               (string-append " Dec " (number->string (car codes)))
               "")
           " Hex"
-          (string-join (map (lambda (n)
+          (string-join (map (lambda (ch)
                               (apply string-append
-                                     (map (lambda (b) (string-append " " (helix/hex b 2))) (helix/utf8-bytes n))))
-                            codes)
+                                     (map (lambda (b) (string-append " " (helix/hex b 2)))
+                                          (bytes->list (string->bytes (string ch))))))
+                            chars)
                        " +"))))))
 
 (helix/define-typed! '("yank-diagnostic")
@@ -1605,8 +1605,8 @@
             ((null? messages) (log! 'error "No diagnostics under primary selection"))
             (else
              (write-register! register messages)
-             (log! 'info (string-append "Yanked " (number->string (length messages)) " diagnostic"
-                                        (if (null? (cdr messages)) "" "s") " to register " register)))))))
+             (log! 'info (string-append "Yanked " (helix/count-noun (length messages) "diagnostic")
+                                        " to register " register)))))))
 
 (when (command-exists? "lsp/format-document")
   (helix/define-typed! '("format" "fmt")
