@@ -30,7 +30,10 @@ re-runs `init.scm`, so the edited body is evaluated again with no restart.
 - Top-level `define`s carry the same `helix/` prefix as house style, to set them apart from
   HUME builtins and Steel functions. `lint.sh` checks both.
 - Bind only keys Helix itself binds, and only to a command that does what Helix's does or
-  comes close. A Helix key with no HUME counterpart keeps its HUME meaning.
+  comes close. Unbind every HUME key Helix doesn't bind; a Helix key with no command that
+  can be built stays unbound. Every `Ctrl` key Helix doesn't bind runs `helix/nothing`: the
+  plugin finds those keys from its own binding tables, so a key bound there needs no extra
+  step, while a HUME root key the plugin keeps goes in `helix/hume-root-keys`.
 - Write the plugin in Steel. A behavior HUME's commands and API can't express goes in the
   README's Known limitations.
 - Comments explain *why*, never *what*. `;;;` documents the definition below it; `;;` marks a

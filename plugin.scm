@@ -26,6 +26,11 @@
 (define (helix/line-length pane line)
   (string-length (helix/line-text pane line)))
 
+(define (helix/dedupe xs)
+  (cond ((null? xs) xs)
+        ((member (car xs) (cdr xs)) (helix/dedupe (cdr xs)))
+        (else (cons (car xs) (helix/dedupe (cdr xs))))))
+
 (define (helix/index-where pred xs)
   (let loop ((xs xs) (i 0))
     (cond ((null? xs) #f)
@@ -218,12 +223,20 @@
         (call! "goto-line-start" pane 0 #t))
       (goto-location! pane (hash 'target pane 'char-offset (line->char-offset pane line)))))
 
+;;; The line a count names, clamped to the last one.
+(define (helix/count-line pane count)
+  (min (- count 1) (- (buffer-line-count pane) 1)))
+
 (define-command! "helix/goto-line"
   "Go to the line the count names, or to the first line without a count."
   (lambda (pane count extend)
-    (helix/goto-line! pane
-                      (if (= count 0) 0 (min (- count 1) (- (buffer-line-count pane) 1)))
-                      extend)))
+    (helix/goto-line! pane (if (= count 0) 0 (helix/count-line pane count)) extend)))
+
+;;; Helix's `G` never extends, and does nothing without a count.
+(define-command! "helix/goto-line-count"
+  "Go to the line the count names; without a count, do nothing."
+  (lambda (pane count)
+    (when (> count 0) (helix/goto-line! pane (helix/count-line pane count) #f))))
 
 ;;; Helix's `goto_window`: `pick` gets the view's first line, the offset of
 ;;; its last row, the scroll margin and the count less one, and names a line
@@ -762,12 +775,6 @@
 
 ;; ── Blank lines ───────────────────────────────────────────────────────────────
 
-(define (helix/dedupe-sorted xs)
-  (cond ((null? xs) xs)
-        ((null? (cdr xs)) xs)
-        ((= (car xs) (cadr xs)) (helix/dedupe-sorted (cdr xs)))
-        (else (cons (car xs) (helix/dedupe-sorted (cdr xs))))))
-
 ;;; One edit inserting the line breaks at the start of the line after each
 ;;; selection's last line (below), or of its first line (above), so every
 ;;; selection stays on its text. The last line has no next line: its breaks
@@ -775,7 +782,7 @@
 (define (helix/add-blank-lines pane count below)
   (let* ((last (- (buffer-line-count pane) 1))
          (edge (if below max min))
-         (lines (helix/dedupe-sorted
+         (lines (helix/dedupe
                   (map (lambda (sel)
                          (char-offset->line pane (edge (selection-anchor sel) (selection-head sel))))
                        (buffer-selections pane))))
@@ -909,7 +916,7 @@
 (define (helix/under prefix bindings)
   (map (lambda (b) (list (string-append prefix " " (car b)) (cadr b))) bindings))
 
-(helix/bind-all! 'normal
+(define helix/normal-bindings
   '(("v" "toggle-extend")
     ("w" "helix/next-word-start")
     ("W" "helix/next-long-word-start")
@@ -945,6 +952,8 @@
     ("ctrl-x" "decrement")
     ("ctrl-b" "page-up")
     ("ctrl-f" "page-down")
+    ("tab" "jump-forward")
+    ("G" "helix/goto-line-count")
     ("g g" "helix/goto-line")
     ("g a" "goto-alternate-buffer")
     ("g t" "helix/goto-window-top")
@@ -1004,8 +1013,35 @@
     ("] space" "helix/add-newline-below")
     ("[ space" "helix/add-newline-above")))
 
+(define helix/present-bindings
+  '(("space f" "pickers/files")
+    ("space F" "pickers/files")
+    ("space b" "pickers/buffers")
+    ("space g" "pickers/git-modified")
+    ("space k" "lsp/hover")
+    ("space s" "lsp/document-symbols")
+    ("space S" "lsp/workspace-symbols")
+    ("space r" "lsp/rename")
+    ("space a" "lsp/code-actions")
+    ("space p" "classic-paste/clipboard-after")
+    ("space P" "classic-paste/clipboard-before")
+    ("space /" "grep/picker")
+    ("g r" "lsp/references")
+    ("=" "lsp/format-source")
+    ("] d" "lsp/goto-next-diagnostic")
+    ("[ d" "lsp/goto-prev-diagnostic")))
+
+;;; HUME's and the eager core plugins' keys that Helix doesn't have. A Ctrl
+;;; key whose bare key is a root key is left to the Ctrl bindings below.
+(define helix/non-helix-keys
+  '("shift-tab" "#" "{" "}" "-" "=" "S" "M"
+    "g u" "g U" "g v" "g V" "g x" "g X" "g F" "g T" "g A" "g C"
+    "m w" "m /" "m u" "m U" "m i i" "m i u" "m a u" "m i v" "m a v" "m i l" "m a l"
+    "z j" "z k" "z f" "z m" "ctrl-V"))
+
+(for-each (lambda (key) (unbind-key! 'normal key)) helix/non-helix-keys)
+(helix/bind-all! 'normal helix/normal-bindings)
 (bind-key-extend! 'normal "x" "select-line")
-(unbind-key! 'normal "m w")
 
 (define helix/window-bindings
   '(("w" "pane-focus-next")
@@ -1049,22 +1085,45 @@
     ("alt-d" "helix/delete-word-forward")
     ("alt-delete" "helix/delete-word-forward")))
 
+(unbind-key! 'insert "ctrl-space")
+(unbind-key! 'insert "ctrl-|")
+
 (bind-key! 'command "ctrl-s" "helix/insert-word-under-cursor")
 
-(helix/bind-present!
-  '(("space f" "pickers/files")
-    ("space F" "pickers/files")
-    ("space b" "pickers/buffers")
-    ("space g" "pickers/git-modified")
-    ("space k" "lsp/hover")
-    ("space s" "lsp/document-symbols")
-    ("space S" "lsp/workspace-symbols")
-    ("space r" "lsp/rename")
-    ("space a" "lsp/code-actions")
-    ("space p" "classic-paste/clipboard-after")
-    ("space P" "classic-paste/clipboard-before")
-    ("space /" "grep/picker")
-    ("g r" "lsp/references")
-    ("=" "lsp/format-source")
-    ("] d" "lsp/goto-next-diagnostic")
-    ("[ d" "lsp/goto-prev-diagnostic")))
+(helix/bind-present! helix/present-bindings)
+
+;; ── Ctrl keys ─────────────────────────────────────────────────────────────────
+;; On a kitty terminal, a Ctrl key with no binding of its own runs the bare
+;; key's command extending, so Ctrl-j extends a line down. Helix gives Ctrl
+;; keys no such meaning, so every root key's Ctrl form is bound to a command
+;; that does nothing, except the Ctrl keys Helix binds.
+
+(define-command! "helix/nothing"
+  "Do nothing, as Helix does for this key."
+  (lambda (pane) #t))
+
+;;; The root keys HUME binds and the plugin keeps.
+(define helix/hume-root-keys
+  '("h" "j" "k" "l" "left" "right" "up" "down" "home" "end" "pageup" "pagedown"
+    "x" "%" "," "(" ")" "C" "_" "d" "J" "&" ">" "lt" "c" "y" "p" "P" "u" "U" "r"
+    "." "/" "?" "n" "N" "s" "|" ":" "i" "a" "I" "A" "o" "O"))
+
+;;; The keys whose Ctrl form keeps its binding: Helix's, and Ctrl-c, which
+;;; stays HUME's `cancel-pipe`.
+(define helix/helix-ctrl-keys '("b" "f" "u" "d" "i" "o" "a" "x" "c" "w"))
+
+(define (helix/first-key keys)
+  (let loop ((i 0))
+    (cond ((= i (string-length keys)) keys)
+          ((char=? (string-ref keys i) #\space) (substring keys 0 i))
+          (else (loop (+ i 1))))))
+
+(define (helix/modified-key? key)
+  (and (> (string-length key) 1) (memv #\- (string->list key))))
+
+(for-each (lambda (key) (bind-key! 'normal (string-append "ctrl-" key) "helix/nothing"))
+          (filter (lambda (key) (not (or (helix/modified-key? key) (member key helix/helix-ctrl-keys))))
+                  (helix/dedupe
+                    (append helix/hume-root-keys
+                            (map (lambda (b) (helix/first-key (car b)))
+                                 (append helix/normal-bindings helix/present-bindings))))))

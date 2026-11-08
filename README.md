@@ -6,8 +6,8 @@
 It binds every Helix key it can build from HUME's commands: `v` for Extend mode, `w`/`e`/`b`
 selecting from the cursor, `x` growing a line at a time, `f`/`t` selecting up to a character,
 `K` and `~`, `!` and `R`, Helix's goto, match (surround included), view, window (`Ctrl-w`),
-Space and `]`/`[` keys, and its Insert-mode editing keys. A Helix key it can't build keeps its
-HUME meaning.
+Space and `]`/`[` keys, and its Insert-mode editing keys. HUME's keys that Helix doesn't have,
+and the Helix keys it can't build, do nothing.
 
 ## Requirements
 
@@ -32,6 +32,7 @@ If you don't have an `init.scm` yet, create it with this content:
 (bind-key! 'normal "g n" "goto-next-buffer")
 (bind-key! 'normal "g p" "goto-prev-buffer")
 (bind-key! 'normal "K" "helix/keep-selections")
+(bind-key! 'normal "G" "helix/goto-line-count")
 ```
 
 Then start HUME and run:
@@ -53,6 +54,7 @@ If you already have an `init.scm`, add these lines to it:
 (bind-key! 'normal "g n" "goto-next-buffer")
 (bind-key! 'normal "g p" "goto-prev-buffer")
 (bind-key! 'normal "K" "helix/keep-selections")
+(bind-key! 'normal "G" "helix/goto-line-count")
 ```
 
 Before saving, check where they go:
@@ -65,8 +67,9 @@ Before saving, check where they go:
   `cvlmtg/grep.hume`, if you load them: the plugin binds Helix's keys for their actions
   (`Space f`, `Space k`, `] d`, `=`, `Space p`, `Space /`, …) only when they are already
   loaded. Loading it last also lets its `z b` win over `core:pickers`' `z b`.
-- The `g n`, `g p` and `K` lines are there because `core:lsp`, which loads after your
-  `init.scm`, binds those keys to its own commands; a binding in `init.scm` wins over it.
+- The `g n`, `g p`, `K` and `G` lines are there because `core:lsp`, which loads after your
+  `init.scm`, binds those keys (`G R` for `G`) to its own commands; a binding in `init.scm`
+  wins over it.
 
 Then run `:plum-install-plugins` and `:reload-config` from inside HUME, as for a new config.
 
@@ -110,6 +113,8 @@ To stay on a release instead of the latest commit, pin its tag with `#:ref`:
 | Normal | `Ctrl-x` | `decrement` | Decrement the number under each selection |
 | Normal | `Ctrl-b` / `Ctrl-f` | `page-up` / `page-down` | Scroll a page |
 | Normal | `g g` | `helix/goto-line` | First line, or the line a count names |
+| Normal | `G` | `helix/goto-line-count` | The line a count names; nothing without a count |
+| Normal | `Tab` | `jump-forward` | Jump list forward, as `Ctrl-i` |
 | Normal | `g t` / `g c` / `g b` | `helix/goto-window-top` / `-center` / `-bottom` | Top, middle or bottom line of the view |
 | Normal | `g j` / `g k` | `helix/move-line-down` / `helix/move-line-up` | Move by lines of the file, not wrapped rows |
 | Normal | `g f` | `helix/goto-file` | Open the path under the cursor, or each selected path |
@@ -157,8 +162,7 @@ them as in Helix. A `set-option!` of your own in `init.scm` still wins.
 
 - Extend mode is on `v` instead of `e`.
 - `m s` wraps the selection instead of selecting a surrounding pair, and `m w` does nothing.
-- `m m` jumps to the matching bracket instead of selecting the word; `M M` still selects a
-  WORD.
+- `m m` jumps to the matching bracket instead of selecting the word.
 - `*` searches the selection instead of the word under the cursor.
 - `[` and `]` start Helix's jumps instead of cycling the kill ring. To keep cycling, bind it
   in your `init.scm`, for example `(bind-key! 'normal "alt-[" "paste-ring-older")`.
@@ -170,11 +174,43 @@ them as in Helix. A `set-option!` of your own in `init.scm` still wins.
 - `K` keeps the selections a regex matches, also with `core:lsp` loaded once your `init.scm`
   binds it as [Install](#install) shows; `lsp/hover` stays on `Space k`.
 - `Ctrl-u`, `Ctrl-k` and `Alt-d` delete text in Insert mode.
-- On a kitty terminal, `Ctrl-w`, `Ctrl-b` and `Ctrl-f` don't extend `w`, `b` and `f` for one
-  motion, as they do in HUME.
+- On a kitty terminal, `Ctrl` with a key does nothing unless Helix binds that `Ctrl` key, where
+  HUME extends the key's motion for one press (`Ctrl-j` extends a line down).
 
-A Helix key the plugin can't build keeps its HUME meaning, so loading the plugin never turns a
-working key into a dead one: `S`, `G`, `Ctrl-s`, `z j`/`z k`/`z m` and `Q`/`q`, among others.
+HUME's keys that Helix doesn't have do nothing, so only Helix's keys work. Where Helix has the
+same command on another key, the table names it. To get a key back, bind it in your
+`init.scm`, for example `(bind-key! 'normal "#" "goto-matching-pair")`.
+
+| Key | HUME's command | Helix's key for it |
+|---|---|---|
+| `Ctrl-p` + key | `pane-focus-*`, `pane-split`, `pane-vsplit`, `pane-close`, `pane-rotate-*`, `goto-next-tab`, `goto-prev-tab` | `Ctrl-w` + key for the panes |
+| `Tab` / `Shift-Tab` (kitty) | `pane-focus-next` / `pane-focus-prev` | `Ctrl-w w`; `Tab` jumps forward |
+| `#` | `goto-matching-pair` | `m m` |
+| `{` / `}` | `goto-prev-paragraph` / `goto-next-paragraph` | `[ p` / `] p` |
+| `-` / `=` | `repeat-find-backward` / `repeat-find-forward` | `Alt-.` |
+| `S` | `split-selection-on-newlines` | `Alt-s` |
+| `G` + key | `make-text-lowercase`, `make-text-uppercase`, `make-text-capitalized`, `toggle-comment`, `increment-sequence`, `decrement-sequence` | `` ` ``, ``Alt-` ``, `Space c` |
+| `g u` / `g U`, `g v` / `g V`, `g x` / `g X` | `goto-next-test` / `goto-prev-test`, the same for values and tags | `] T` / `[ T` |
+| `g F`, `g T`, `g A`, `g C` | `goto-prev-function`, `-class`, `-argument`, `-comment` | `[ f`, `[ t`, `[ a`, `[ c` |
+| `m /` | `select-all-matches` | |
+| `m u` / `m U` | `undo-selection-change` / `redo-selection-change` | |
+| `m i i` | `select-last-insertion` | |
+| `m i` / `m a` + `u`, `v`, `l` | the test, value and line text objects | `T` and `e` for test and value |
+| `M M` | `select-uppercase-word` | |
+| `z j` / `z k` | `bottom-view-on-cursor` / `top-view-on-cursor` | `z b` / `z t` |
+| `Ctrl-e` | `flip-selections` | `Alt-;` |
+| `Ctrl-r` | `redo` | `U` |
+| `Ctrl-s` | `decrement` | `Ctrl-x` |
+| `Ctrl-Shift-x` | `select-line-backward` | |
+| `Ctrl-;`, `Ctrl-,`, `Ctrl-/` (kitty) | `collapse-to-anchor-and-exit-extend`, `remove-primary-selection`, `search-selection` | `Alt-,`, `*` |
+| Insert `Ctrl-Space` | `completion-trigger` | `Ctrl-x` |
+| Insert `Ctrl-\|` (kitty) | `pipe` | |
+| `z f`, `z m` (`core:pickers`) | `pickers/files`, `pickers/git-modified` | `Space f`, `Space g` |
+| `Ctrl-v`, `Ctrl-Shift-v` (`core:classic-paste`) | `classic-paste/clipboard-after`, `classic-paste/clipboard-before` | `Space p`, `Space P` |
+
+`core:lsp` binds its own keys after the plugin loads, so `z r`, `z a`, `z s`, `z S` and `G R`
+stay, and so do `K`, `g n`, `g p` and `G` unless your `init.scm` binds them as
+[Install](#install) shows.
 
 ## Known limitations
 
@@ -194,8 +230,8 @@ working key into a dead one: `S`, `G`, `Ctrl-s`, `z j`/`z k`/`z m` and `Q`/`q`, 
 - **`g f` on a directory reports an error** instead of opening a file picker there, and it
   opens a URL as a file path.
 - **`Ctrl-c` stops a running `|`**, as in HUME, instead of toggling comments, which are on
-  `Space c` and `G G`.
-- **Helix keys a plugin can't build** stay unbound or keep HUME's meaning:
+  `Space c`.
+- **Helix keys a plugin can't build** stay unbound:
   - `S` (split on a regex): Steel has no regex, and HUME can only narrow selections to the
     matches.
   - `Alt-x`, `Alt-:`, `Alt--` and `Alt-_`: a plugin can't set a selection's ends.

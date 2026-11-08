@@ -24,3 +24,7 @@ Requires HUME 0.19.0 or later and `core:stdlib`.
   clipboard. `Space /` opens grep.hume's picker when it is loaded first.
 - Insert-mode `Ctrl-u`, `Ctrl-k`, `Alt-d`/`Alt-Delete` and `PageUp`/`PageDown`, and `Ctrl-s`
   on the `:` prompt.
+- `G` goes to the line a count names, and `Tab` jumps forward, as `Ctrl-i` does.
+- HUME's keys that Helix doesn't have are unbound, core:pickers' `z f`/`z m` and
+  core:classic-paste's `Ctrl-v`/`Ctrl-Shift-v` included, and on a kitty terminal a `Ctrl` key
+  Helix doesn't bind does nothing instead of extending the key's motion.
