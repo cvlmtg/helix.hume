@@ -40,3 +40,11 @@ expect default.scm $'foo\nbar\n' "lCed" $'\n\n'
 expect default.scm $'a.b c.d e\n' "lWd" $'ac.d e\n'
 expect default.scm $'a.b c.d e\n' "lEEd" $'a.b e\n'
 expect default.scm $'a.b c.d\n' "lllllBd" $'a.b d\n'
+
+# On whitespace, w selects the rest of the whitespace run and e runs on
+# through the next word's end.
+expect default.scm $'foo   bar\n' "lllwd" $'foobar\n'
+expect default.scm $'foo   bar\n' "llllwd" $'foo bar\n'
+expect default.scm $'foo   bar baz\n' "llled" $'foo baz\n'
+expect default.scm $'a.b   c.d\n' "lllWd" $'a.bc.d\n'
+expect default.scm $'a.b   c.d\n' "lllEd" $'a.b\n'

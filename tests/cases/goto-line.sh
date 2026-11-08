@@ -8,3 +8,6 @@ source ./lib.sh
 expect default.scm $'foo\nbar\nbaz\n' "jjggiX<esc>" $'Xfoo\nbar\nbaz\n'
 expect default.scm $'foo\nbar\nbaz\n' "2ggiX<esc>" $'foo\nXbar\nbaz\n'
 expect default.scm $'foo\nbar\nbaz\n' "9ggiX<esc>" $'foo\nbar\nXbaz\n'
+
+# In Extend mode a count extends the selection to that line's start.
+expect default.scm $'foo\nbar\nbaz\n' "jjv2ggd" $'foo\naz\n'

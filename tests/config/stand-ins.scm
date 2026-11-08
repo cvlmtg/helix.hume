@@ -8,5 +8,6 @@
     "lsp/hover" "lsp/document-symbols" "lsp/workspace-symbols" "lsp/rename"
     "lsp/code-actions" "lsp/references" "lsp/format-source"
     "lsp/goto-next-diagnostic" "lsp/goto-prev-diagnostic"
-    "classic-paste/clipboard-after" "classic-paste/clipboard-before"))
+    "classic-paste/clipboard-after" "classic-paste/clipboard-before"
+    "grep/picker"))
 (load-plugin! "@PLUGIN@")

@@ -13,3 +13,14 @@ Requires HUME 0.19.0 or later and `core:stdlib`.
   plugins are loaded first.
 - Sets `word-selects-whitespace` to `after`, as Helix's words take the whitespace after them.
 - Takes over HUME's `core:helix-surround`: `m s`, `m d` and `m r` surround as in Helix.
+- Selection keys: `X`, `K`/`Alt-K`, `~`, `Alt-(`/`Alt-)`, `Alt-c`, and `!`/`Alt-!` inserting a
+  shell command's output.
+- History keys: `Alt-u`/`Alt-U` stepping through every undo branch, `g .` and `g m`.
+- Goto and window keys: `g t`/`g c`/`g b`, `g j`/`g k`, `g f`, and `Ctrl-w` / `Space w` with
+  `o`, `f` and `F`.
+- `] g`/`[ g`/`] G`/`[ G` selecting changes against git's last commit, `] D`/`[ D`, and the
+  `Space d`/`Space D` diagnostics pickers.
+- `Space c`/`Space Alt-c` toggle comments and `Space Y` copies the primary selection to the
+  clipboard. `Space /` opens grep.hume's picker when it is loaded first.
+- Insert-mode `Ctrl-u`, `Ctrl-k`, `Alt-d`/`Alt-Delete` and `PageUp`/`PageDown`, and `Ctrl-s`
+  on the `:` prompt.

@@ -82,19 +82,27 @@ _hume_check_version() {
 
 # ── One headless run ─────────────────────────────────────────────────────────
 
-# run_hume <config> <input> <keys>
+# run_hume <config> <input> <keys> [<base>]
 #
 # Runs hume on a file holding <input>, with tests/config/<config> (its
 # @PLUGIN@ replaced by $PLUGIN_NAME) as init.scm, replaying <keys> in HUME's
 # key-stream notation (`<esc>`, `<ret>`, `<c-h>`, `<a-.>`; a space is a
-# space). Sets OUTPUT to the buffer it saved and LOG to its messages, trace
-# lines left out.
+# space). With <base>, the file sits in a git repository whose HEAD holds
+# <base> as its committed text. Sets OUTPUT to the buffer it saved and LOG to
+# its messages, trace lines left out.
 run_hume() {
     local config="$1" input="$2" keys="$3" work
     work="$(mktemp -d)"
     mkdir -p "$work/data/hume/plugins/${PLUGIN_NAME%/*}"
     ln -s "$REPO_ROOT" "$work/data/hume/plugins/$PLUGIN_NAME"
     sed -e "s|@PLUGIN@|$PLUGIN_NAME|g" "$CONFIG_DIR/$config" > "$work/init.scm"
+    if [[ "$#" -ge 4 ]]; then
+        printf '%s' "$4" > "$work/input.txt"
+        git -C "$work" init -q
+        git -C "$work" add input.txt
+        git -C "$work" -c user.name=tests -c user.email=tests@localhost \
+            -c commit.gpgsign=false commit -q -m base
+    fi
     printf '%s' "$input" > "$work/input.txt"
 
     XDG_DATA_HOME="$work/data" hume --config "$work/init.scm" --keys "$keys" \
@@ -106,19 +114,33 @@ run_hume() {
     rm -rf "$work"
 }
 
+# _check_output <input> <keys> <expected-output> — fails, printing both
+# texts and the log, when the buffer the last run_hume saved differs.
+_check_output() {
+    if [[ "$OUTPUT" != "$3" ]]; then
+        echo "keys:     $(printf '%q' "$2")" >&2
+        echo "input:    $(printf '%q' "$1")" >&2
+        echo "expected: $(printf '%q' "$3")" >&2
+        echo "got:      $(printf '%q' "$OUTPUT")" >&2
+        [[ -n "$LOG" ]] && echo "log:"$'\n'"$LOG" >&2
+        return 1
+    fi
+}
+
 # expect <config> <input> <keys> <expected-output>
 #
 # Fails, printing both texts and the log, when the saved buffer differs.
 expect() {
     run_hume "$1" "$2" "$3"
-    if [[ "$OUTPUT" != "$4" ]]; then
-        echo "keys:     $(printf '%q' "$3")" >&2
-        echo "input:    $(printf '%q' "$2")" >&2
-        echo "expected: $(printf '%q' "$4")" >&2
-        echo "got:      $(printf '%q' "$OUTPUT")" >&2
-        [[ -n "$LOG" ]] && echo "log:"$'\n'"$LOG" >&2
-        return 1
-    fi
+    _check_output "$2" "$3" "$4"
+}
+
+# expect_git <config> <base> <input> <keys> <expected-output>
+#
+# Like expect, with the file committed as <base> in a git repository.
+expect_git() {
+    run_hume "$1" "$3" "$4" "$2"
+    _check_output "$3" "$4" "$5"
 }
 
 # expect_log <config> <substring> — fails unless loading <config> logs a

@@ -16,3 +16,6 @@ expect default.scm $'hello world\n' "vllfwd" $'orld\n'
 expect default.scm $'hello world\n' "f<esc>d" $'ello world\n'
 
 expect default.scm $'a.b.c\n' "f.<a-.>d" $'ac\n'
+
+# Alt-. repeats a backward find backward.
+expect default.scm $'a.b.c\n' "llllF.<a-.>d" $'ac\n'
